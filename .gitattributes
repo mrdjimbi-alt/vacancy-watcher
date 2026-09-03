@@ -1,0 +1,5 @@
+# на сервер эти файлы уезжают в Linux: с CRLF bash ругается
+# на «bad interpreter», а systemd не читает юнит
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
