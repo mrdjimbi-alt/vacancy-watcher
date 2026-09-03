@@ -312,17 +312,50 @@ def escape_html(text):
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+          "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+def interleave(rows):
+    """Раскладывает вакансии по очереди с разных сайтов.
+
+    Иначе первые сообщения целиком уходят с одного сайта, а второй появляется
+    только в самом конце рассылки.
+    """
+    by_site = {}
+    for r in rows:
+        by_site.setdefault(r["site"], []).append(r)
+
+    mixed = []
+    queues = list(by_site.values())
+    while any(queues):
+        for queue in queues:
+            if queue:
+                mixed.append(queue.pop(0))
+    return mixed
+
+
 def build_messages(rows, chunk=10):
     """Собирает сообщения для Telegram: по 10 вакансий, чтобы не упереться в лимит."""
+    today = datetime.now()
+    header = (f"<b>Новые вакансии за {today.day} {MONTHS[today.month - 1]}: "
+              f"{len(rows)}</b>")
+
     messages = []
+    rows = interleave(rows)
+
     for start in range(0, len(rows), chunk):
-        part = rows[start:start + chunk]
-        lines = [f"<b>Новые вакансии: {len(rows)}</b>" if start == 0 else "<b>продолжение</b>"]
+        part = sorted(rows[start:start + chunk], key=lambda r: r["site"])
+        lines = [header if start == 0 else "<b>продолжение</b>"]
+
+        current_site = None
         for r in part:
+            if r["site"] != current_site:
+                current_site = r["site"]
+                lines.append(f"\n<b>{current_site}</b>")
             lines.append(
                 f"\n<a href=\"{r['url']}\">{escape_html(r['title'])}</a>\n"
-                f"{escape_html(r['company'])} · {escape_html(r['salary'])}\n"
-                f"<i>{r['site']}</i>"
+                f"{escape_html(r['company'])} · {escape_html(r['salary'])}"
             )
         messages.append("\n".join(lines))
     return messages
