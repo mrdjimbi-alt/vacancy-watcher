@@ -342,8 +342,6 @@ def build_messages(rows, chunk=10):
               f"{len(rows)}</b>")
 
     messages = []
-    rows = interleave(rows)
-
     for start in range(0, len(rows), chunk):
         part = sorted(rows[start:start + chunk], key=lambda r: r["site"])
         lines = [header if start == 0 else "<b>продолжение</b>"]
@@ -365,11 +363,16 @@ def send(dry=False, limit=None, keep=False):
     conn = db_connect()
     cur = conn.execute(
         "SELECT id, site, title, company, salary, url FROM vacancies"
-        " WHERE sent_at IS NULL ORDER BY site, id"
-        + (f" LIMIT {int(limit)}" if limit else "")
+        " WHERE sent_at IS NULL ORDER BY id"
     )
     rows = [dict(zip(("id", "site", "title", "company", "salary", "url"), r))
             for r in cur.fetchall()]
+
+    # чередуем источники до обрезки: иначе limit отрежет вакансии одного сайта,
+    # а второй сайт уедет в самый хвост рассылки
+    rows = interleave(rows)
+    if limit:
+        rows = rows[:int(limit)]
 
     if not rows:
         print("новых вакансий нет, отправлять нечего")
