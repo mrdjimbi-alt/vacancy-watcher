@@ -11,6 +11,7 @@
 Токен и чат берутся из переменных окружения TG_TOKEN и TG_CHAT.
 """
 import argparse
+import html
 import os
 import re
 import sqlite3
@@ -18,7 +19,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -34,13 +35,57 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# --- фильтр: что и где ищем ---------------------------------------------
+# Москва: на hh это area=1, на rabota.ru geo_id=4400.
+HH_AREA = 1
+RABOTA_GEO = 4400
+
+# Профессиональные роли hh, из которых складывается «айти»:
+# 96 разработчик, 10 аналитик, 104 руководитель разработки, 113 сисадмин,
+# 124 тестировщик, 156 BI и аналитик данных, 160 DevOps, 165 Data Science.
+HH_IT_ROLES = [96, 10, 104, 113, 124, 156, 160, 165]
+HH_ROLES_PARAM = "&".join(f"professional_role={r}" for r in HH_IT_ROLES)
+
+# У rabota.ru рубрика ИТ дорисовывается скриптами и обычным запросом не
+# берётся, зато работает поиск по слову вместе с городом. Поэтому айти
+# там собирается набором запросов.
+IT_QUERIES = [
+    "разработчик", "программист", "аналитик", "тестировщик",
+    "devops", "системный администратор", "python", "1С",
+]
+
+# Поиск по слову тянет лишнее: по «аналитик» приходит химик-аналитик,
+# по «1С» — оператор 1С в строительном магазине. Поэтому там, где сайт
+# ищет текстом, название проверяется дополнительно.
+NOT_IT_RE = re.compile(
+    r"химик|повар|официант|бариста|водител|продав|кассир|прораб|грузчик|швея|"
+    r"парикмахер|уборщ|курьер|охранник|кладовщик|комплектовщик|мерчендайзер|"
+    r"менеджер по продажам|торговый представитель|сварщик|электромонтаж|"
+    r"оператор 1с|операционист|преподавател|репетитор|товарному учет|"
+    r"сопровождению сделок|на склад", re.I)
+IT_RE = re.compile(
+    r"разработ|программист|developer|devops|аналитик|analyst|тестировщ|"
+    r"тестирован|\bqa\b|\bsre\b|\bml\b|data|дата|администратор|инженер|"
+    r"архитектор|верстальщ|frontend|backend|fullstack|full-stack|"
+    r"\bит\b|\bit\b|1c|1с|python|java|php|golang|техподдержк|"
+    r"технической поддержки|информационн", re.I)
+
+
+def looks_like_it(title):
+    if NOT_IT_RE.search(title):
+        return False
+    return bool(IT_RE.search(title))
+
+
 # Каждый сайт — просто набор селекторов. Новый источник добавляется сюда,
 # трогать остальной код не нужно.
 SITES = {
     # hh.ru: классы в разметке хэшированные и меняются с релизами, поэтому
     # цепляемся за data-qa, а зарплату берём регексом по тексту карточки.
+    # Выборку сужает сама ссылка: город плюс профессиональные роли.
     "hh.ru": {
-        "page_url": "https://hh.ru/search/vacancy?text={query}&area=1&page={page}",
+        "page_url": (f"https://hh.ru/search/vacancy?area={HH_AREA}"
+                     f"&{HH_ROLES_PARAM}&page={{page}}"),
         "page_start": 0,
         "card": '[data-qa="vacancy-serp__vacancy"]',
         "title": '[data-qa="serp-item__title"]',
@@ -53,7 +98,10 @@ SITES = {
     # Селекторы оставлены рабочие: заработает, как только появится доступ
     # (официальный ключ api.superjob.ru или обход капчи).
     "superjob.ru": {
-        "page_url": "https://russia.superjob.ru/vacancy/search/?keywords={query}&page={page}",
+        "page_url": ("https://moscow.superjob.ru/vacancy/search/"
+                     "?keywords={query}&page={page}"),
+        "queries": IT_QUERIES,
+        "filter_it": True,
         "card": "div.f-test-vacancy-item",
         "title": "a.f-test-link-Vakansiya",
         "company": "span.f-test-text-vacancy-item-company-name",
@@ -76,7 +124,10 @@ SITES = {
         "salary": "span.salary",
     },
     "rabota.ru": {
-        "page_url": "https://www.rabota.ru/vacancy?page={page}",
+        "page_url": (f"https://www.rabota.ru/vacancy?query={{query}}"
+                     f"&geo_id={RABOTA_GEO}&page={{page}}"),
+        "queries": IT_QUERIES,
+        "filter_it": True,
         "card": "div.vacancy-preview-card__wrapper",
         "title": "h3.vacancy-preview-card__title a",
         "company": "span.vacancy-preview-card__company-name",
@@ -92,7 +143,9 @@ SALARY_RE = re.compile(
 
 
 def clean(text):
-    return re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+    # rabota.ru отдаёт названия с двойным экранированием: АО &quot;Аметист&quot;
+    text = html.unescape(html.unescape(text or ""))
+    return re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
 
 
 def norm_salary(text):
@@ -150,8 +203,8 @@ def find_salary(card, cfg):
     return "не указана"
 
 
-def parse_page(site, cfg, page, query="python"):
-    url = cfg["page_url"].format(page=page, query=query)
+def parse_page(site, cfg, page, query=""):
+    url = cfg["page_url"].format(page=page, query=quote(query))
     resp = requests.get(url, headers=HEADERS, timeout=30)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -167,6 +220,9 @@ def parse_page(site, cfg, page, query="python"):
             continue
         title = clean(title_node.get_text(" ", strip=True))
         if not title:
+            continue
+        # на hh выборку уже сузили роли в ссылке, здесь чистим текстовый поиск
+        if cfg.get("filter_it") and not looks_like_it(title):
             continue
 
         rows.append({
@@ -190,36 +246,42 @@ def collect(pages, only=None):
     for site, cfg in targets.items():
         added = dup_url = dup_clone = 0
         start = cfg.get("page_start", 1)
-        for page in range(start, start + pages):
-            try:
-                rows = parse_page(site, cfg, page)
-            except Exception as e:
-                print(f"  {site} стр.{page}: не открылась ({e})")
-                continue
-            if not rows:
-                print(f"  {site} стр.{page}: карточек не найдено (защита или сменилась вёрстка)")
+        # сайт либо ищет по набору запросов (rabota, superjob),
+        # либо отдаёт готовую выборку по фильтру прямо в ссылке (hh)
+        queries = cfg.get("queries") or [""]
 
-            for r in rows:
-                fp = fingerprint(site, r["title"], r["company"], r["salary"])
+        for query in queries:
+            for page in range(start, start + pages):
+                try:
+                    rows = parse_page(site, cfg, page, query=query)
+                except Exception as e:
+                    label = f"«{query}» " if query else ""
+                    print(f"  {site} {label}стр.{page}: не открылась ({e})")
+                    break
+                if not rows:
+                    break
 
-                cur = conn.execute("SELECT 1 FROM vacancies WHERE url = ?", (r["url"],))
-                if cur.fetchone():
-                    dup_url += 1
-                    continue
+                for r in rows:
+                    fp = fingerprint(site, r["title"], r["company"], r["salary"])
 
-                cur = conn.execute("SELECT 1 FROM vacancies WHERE fingerprint = ?", (fp,))
-                if cur.fetchone():
-                    dup_clone += 1
-                    continue
+                    cur = conn.execute("SELECT 1 FROM vacancies WHERE url = ?", (r["url"],))
+                    if cur.fetchone():
+                        dup_url += 1
+                        continue
 
-                conn.execute(
-                    "INSERT INTO vacancies (site, title, company, salary, url,"
-                    " fingerprint, found_at) VALUES (?,?,?,?,?,?,?)",
-                    (site, r["title"], r["company"], r["salary"], r["url"], fp, now),
-                )
-                added += 1
-            conn.commit()
-            time.sleep(cfg.get("pause", 1.5))
+                    cur = conn.execute("SELECT 1 FROM vacancies WHERE fingerprint = ?", (fp,))
+                    if cur.fetchone():
+                        dup_clone += 1
+                        continue
+
+                    conn.execute(
+                        "INSERT INTO vacancies (site, title, company, salary, url,"
+                        " fingerprint, found_at) VALUES (?,?,?,?,?,?,?)",
+                        (site, r["title"], r["company"], r["salary"], r["url"], fp, now),
+                    )
+                    added += 1
+                conn.commit()
+                time.sleep(cfg.get("pause", 1.5))
 
         report[site] = (added, dup_url, dup_clone)
         print(f"{site}: новых {added}, уже было {dup_url}, клонов отсеяно {dup_clone}")
