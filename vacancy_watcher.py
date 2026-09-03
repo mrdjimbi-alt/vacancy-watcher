@@ -328,7 +328,7 @@ def build_messages(rows, chunk=10):
     return messages
 
 
-def send(dry=False, limit=None):
+def send(dry=False, limit=None, keep=False):
     conn = db_connect()
     cur = conn.execute(
         "SELECT id, site, title, company, salary, url FROM vacancies"
@@ -372,6 +372,11 @@ def send(dry=False, limit=None):
             conn.close()
             return 1
         time.sleep(1)
+
+    if keep:
+        conn.close()
+        print("отправлено, но в базе вакансии остались новыми (показ, не рассылка)")
+        return 0
 
     now = datetime.now().isoformat(timespec="seconds")
     conn.executemany("UPDATE vacancies SET sent_at = ? WHERE id = ?",
@@ -445,6 +450,8 @@ def main():
     ap.add_argument("--pages", type=int, default=2)
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--limit", type=int, help="отправить не больше N вакансий")
+    ap.add_argument("--keep", action="store_true",
+                    help="отправить, но не помечать отправленными (показать образец)")
     ap.add_argument("--sites", help="только эти сайты, через запятую")
     ap.add_argument("--db", help="файл базы (по умолчанию vacancies.db)")
     args = ap.parse_args()
@@ -457,7 +464,7 @@ def main():
     if args.cmd in ("collect", "run"):
         collect(args.pages, only=only)
     if args.cmd in ("send", "run"):
-        return send(dry=args.dry, limit=args.limit)
+        return send(dry=args.dry, limit=args.limit, keep=args.keep)
     if args.cmd == "stats":
         stats()
     if args.cmd == "export":

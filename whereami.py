@@ -53,6 +53,13 @@ for upd in updates["result"]:
         chat = item["chat"]
         seen[chat["id"]] = (chat.get("type"), chat.get("title") or chat.get("username"))
 
+        # если сообщение переслали из канала, id канала виден в источнике —
+        # это запасной путь, когда бота в канал добавили, а писать там некому
+        origin = item.get("forward_from_chat") or item.get("forward_origin", {}).get("chat")
+        if origin:
+            seen[origin["id"]] = (origin.get("type"),
+                                  origin.get("title") or origin.get("username"))
+
 if not seen:
     print("\nчатов пока не видно.")
     print("добавь бота админом в канал и напиши там любое сообщение, потом запусти снова.")
