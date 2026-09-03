@@ -1,0 +1,15 @@
+[Unit]
+Description=Сбор вакансий и отправка новых в Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/vacancy-watcher
+ExecStart=/opt/vacancy-watcher/venv/bin/python vacancy_watcher.py run --pages 3
+User=vacancy
+StandardOutput=append:/var/log/vacancy-watcher.log
+StandardError=append:/var/log/vacancy-watcher.log
+
+# сайты иногда отвечают долго, но висеть полчаса смысла нет
+TimeoutStartSec=1800

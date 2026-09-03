@@ -27,6 +27,22 @@ from bs4 import BeautifulSoup
 HERE = Path(__file__).parent
 DB_PATH = HERE / "vacancies.db"
 
+
+def load_env():
+    """Читает .env рядом со скриптом. На сервере так удобнее, чем export."""
+    path = HERE / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_env()
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
 HEADERS = {

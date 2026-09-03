@@ -20,12 +20,16 @@ python vacancy_watcher.py export              # выгрузить всё в Exc
 Ключи: `--pages N` сколько страниц каталога брать, `--sites hh.ru,rabota.ru` только
 эти источники, `--db файл.db` своя база, `--limit N` отправить не больше N штук.
 
-Токен бота и чат берутся из окружения:
+Токен бота и адрес канала берутся из `.env` рядом со скриптом (образец —
+`.env.example`) или из переменных окружения:
 
-```bash
-set TG_TOKEN=123456:AA...
-set TG_CHAT=123456789
 ```
+TG_TOKEN=123456:AA...
+TG_CHAT=@имя_канала
+```
+
+Чтобы вакансии падали в канал, бота нужно добавить туда админом с правом
+публиковать. Для закрытого канала вместо `@имени` подставляется числовой id.
 
 ## Добавить новый сайт
 
@@ -81,21 +85,25 @@ python probe.py https://example.com/vacancies
 
 ## Раз в сутки
 
-Linux, `/etc/systemd/system/vacancy-watcher.timer`:
+На сервере с systemd всё ставится одной командой от root:
 
-```ini
-[Unit]
-Description=Сбор вакансий раз в сутки
-
-[Timer]
-OnCalendar=*-*-* 09:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
+```bash
+bash deploy/install.sh
 ```
 
-Windows, через планировщик:
+Скрипт заводит отдельного пользователя, кладёт код в `/opt/vacancy-watcher`,
+собирает venv, ставит юнит с таймером на 9 утра и включает его. Остаётся вписать
+токен и канал в `/opt/vacancy-watcher/.env`.
+
+Проверить, что живое:
+
+```bash
+systemctl list-timers vacancy-watcher.timer   # когда следующий запуск
+systemctl start vacancy-watcher.service       # прогнать прямо сейчас
+tail -f /var/log/vacancy-watcher.log
+```
+
+На Windows то же самое через планировщик:
 
 ```powershell
 schtasks /create /tn "vacancy-watcher" /tr "python C:\path\vacancy_watcher.py run" /sc daily /st 09:00
@@ -108,3 +116,4 @@ schtasks /create /tn "vacancy-watcher" /tr "python C:\path\vacancy_watcher.py ru
 | `vacancy_watcher.py` | сбор, база, дедуп, отправка, выгрузка в Excel |
 | `probe.py` | разведка незнакомого сайта перед тем, как писать селекторы |
 | `preview.py` | картинка с содержимым базы, удобно показывать заказчику |
+| `deploy/` | юнит, таймер и скрипт установки на сервер |
